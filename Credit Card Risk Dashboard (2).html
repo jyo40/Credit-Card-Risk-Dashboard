@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Credit Card Risk Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mu:#667085;--bd:#e3e6ea;--ac:#2563eb;--rd:#dc2626;--tl:#0d9488;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1b2027;--tx:#e8eaed;--mu:#9aa3ad;--bd:#2c333c;--ac:#6ea0ff;--rd:#f87171;--tl:#2dd4bf;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1b2027;--tx:#e8eaed;--mu:#9aa3ad;--bd:#2c333c;--ac:#6ea0ff;--rd:#f87171;--tl:#2dd4bf;color-scheme:dark}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;max-width:1200px;margin:auto}
+h1{font-size:20px;margin:0 0 2px}h2{font-size:13px;margin:0 0 8px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sub{color:var(--mu);margin-bottom:12px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;min-width:0}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:12px}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mu);gap:3px}
+input,select,button{font:inherit;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px 8px}
+input[type=number]{width:86px}button{cursor:pointer}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.kpi b{display:block;font-size:22px}.kpi span{color:var(--mu);font-size:12px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin-bottom:12px}
+canvas{max-height:260px}.sc{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+pre{margin:0;font-size:12px;max-height:260px;overflow:auto;white-space:pre}
+.hi{color:var(--rd);font-weight:600}.note{font-size:12px;color:var(--mu)}
+</style></head><body>
+<h1>Credit Card Risk Dashboard</h1>
+<div class="sub" id="src"></div>
+<div class="card bar">
+<label>Model<select id="mdl"><option value="0">Logistic Regression</option><option value="1">Decision Tree</option><option value="2" selected>Random Forest</option></select></label>
+<label>High-risk threshold: <span id="thv">0.30</span><input type="range" id="th" min="0.05" max="0.9" step="0.05" value="0.3"></label>
+<label>Age min<input type="number" id="a0" value="18"></label><label>Age max<input type="number" id="a1" value="100"></label>
+<label>Limit min<input type="number" id="l0" value="0" step="10000"></label><label>Limit max<input type="number" id="l1" value="2000000" step="10000"></label>
+<label>Status<select id="st"><option value="-1">All</option><option value="1">Defaulted</option><option value="0">Did not default</option></select></label>
+<label>Your CSV (UCI / Kaggle)<input type="file" id="f" accept=".csv"></label>
+<button id="demo">Use demo data</button>
+</div>
+<div class="kpi">
+<div class="card"><b id="k1"></b><span>Customers in view</span></div>
+<div class="card"><b id="k2"></b><span>Actual default rate</span></div>
+<div class="card"><b id="k3"></b><span>Avg predicted risk</span></div>
+<div class="card"><b id="k4"></b><span>Flagged high-risk</span></div>
+<div class="card"><b id="k5"></b><span>Avg credit limit</span></div>
+</div>
+<div class="g">
+<div class="card"><h2>Default rate by last payment status (PAY_0)</h2><canvas id="c1"></canvas></div>
+<div class="card"><h2>Default rate by age band</h2><canvas id="c2"></canvas></div>
+<div class="card"><h2>Bills vs payments, last 6 months (avg)</h2><canvas id="c3"></canvas></div>
+<div class="card"><h2>Predicted risk distribution</h2><canvas id="c4"></canvas></div>
+<div class="card"><h2>Feature importance (selected model)</h2><canvas id="c5"></canvas></div>
+</div>
+<div class="g">
+<div class="card sc"><h2>Model comparison (25% hold-out test set)</h2><table id="mt"></table><p class="note">Metrics use the threshold above. Logistic regression is the most interpretable; the forest is usually strongest on AUC.</p></div>
+<div class="card"><h2>Decision tree rules (interpretable)</h2><pre id="rules"></pre></div>
+</div>
+<div class="card sc"><h2>Highest-risk customers in view</h2><table id="ct"></table></div>
+<script>
+const FN=['Credit limit','Age','PAY_0','PAY_2','PAY_3','PAY_4','Bill Sep','Avg bill','Pay Sep','Avg payment','Utilization','Pay/bill ratio'];
+let seed=42;const rnd=()=>(seed=(seed*1664525+1013904223)%4294967296)/4294967296,nrm=()=>Math.sqrt(-2*Math.log(rnd()+1e-9))*Math.cos(6.283*rnd());
+const cl=(v,a,b)=>Math.max(a,Math.min(b,v)),avg=a=>a.reduce((s,v)=>s+v,0)/a.length;
+function synth(n){const R=[];for(let i=0;i<n;i++){const z=nrm(),lim=Math.round(Math.exp(11.5+.8*nrm()-.15*z)/1e4)*1e4||1e4,age=Math.round(cl(35+9*nrm(),21,75));
+const p=[0,1,2,3,4,5].map(()=>cl(Math.round(-.5+.9*z+.7*nrm()),-2,8)),b=[],a=[];
+for(let k=0;k<6;k++){const bb=Math.round(lim*cl(.3+.12*z+.25*rnd(),0,1.2));b.push(bb);a.push(Math.round(bb*cl(.25-.1*z+.3*rnd(),0,1.2)))}
+const lg=-1.8+.45*p[0]+.12*p[1]+.25*z-.4*(lim/2e5-1)*.3;R.push({id:i+1,lim,age,p,b,a,y:rnd()<1/(1+Math.exp(-lg))?1:0})}return R}
+function parse(t){const L=t.trim().split(/\r?\n/),H=L[0].split(',').map(s=>s.replace(/["\s]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')),ix=n=>H.indexOf(n);
+const gi=n=>ix(n),yc=H.findIndex(h=>h.startsWith('default')),p0=gi('pay0')>=0?gi('pay0'):gi('pay1');
+if(yc<0||gi('limitbal')<0)throw Error('Missing LIMIT_BAL or default column');
+return L.slice(1).map((l,i)=>{const c=l.split(',').map(Number);return{id:c[gi('id')]||i+1,lim:c[gi('limitbal')],age:c[gi('age')],p:[c[p0],...[2,3,4,5,6].map(k=>c[gi('pay'+k)])],b:[1,2,3,4,5,6].map(k=>c[gi('billamt'+k)]),a:[1,2,3,4,5,6].map(k=>c[gi('payamt'+k)]),y:c[yc]}}).filter(r=>r.lim>0&&r.p.every(v=>!isNaN(v)))}
+const X=r=>[r.lim,r.age,r.p[0],r.p[1],r.p[2],r.p[3],r.b[0],avg(r.b),r.a[0],avg(r.a),cl(r.b[0]/r.lim,-1,2),cl(r.a.reduce((s,v)=>s+v,0)/Math.max(1,r.b.reduce((s,v)=>s+v,0)),0,2)];
+// ---- models
+function lr(Xt,y){const d=Xt[0].length,mu=[],sd=[];for(let j=0;j<d;j++){const c=Xt.map(r=>r[j]);mu[j]=avg(c);sd[j]=Math.sqrt(avg(c.map(v=>(v-mu[j])**2)))||1}
+const Z=Xt.map(r=>r.map((v,j)=>(v-mu[j])/sd[j])),w=Array(d).fill(0);let b0=0;
+for(let e=0;e<250;e++){const g=Array(d).fill(0);let gb=0;Z.forEach((r,i)=>{const e2=1/(1+Math.exp(-(b0+r.reduce((s,v,j)=>s+v*w[j],0))))-y[i];gb+=e2;r.forEach((v,j)=>g[j]+=e2*v)});b0-=.5*gb/Z.length;for(let j=0;j<d;j++)w[j]-=.5*(g[j]/Z.length+.001*w[j])}
+return{f:x=>1/(1+Math.exp(-(b0+x.reduce((s,v,j)=>s+(v-mu[j])/sd[j]*w[j],0)))),imp:w.map(Math.abs)}}
+function tree(Xs,y,idx,dep,fs,md,imp){const n=idx.length,p=idx.reduce((s,i)=>s+y[i],0)/n,g0=p*(1-p);if(dep>=md||n<40||!p||p==1)return{p,n};let best=null;
+for(const f of fs){const v=idx.map(i=>Xs[i][f]).sort((a,b)=>a-b),th=new Set();for(let k=1;k<12;k++)th.add(v[Math.floor(n*k/12)]);
+for(const t of th){let nl=0,pl=0;for(const i of idx)if(Xs[i][f]<=t){nl++;pl+=y[i]}const nr=n-nl;if(nl<15||nr<15)continue;const a=pl/nl,c=(p*n-pl)/nr,g=(nl*a*(1-a)+nr*c*(1-c))/n;if(!best||g<best.g)best={g,f,t}}}
+if(!best||best.g>=g0)return{p,n};imp[best.f]+=(g0-best.g)*n;const L=[],R=[];idx.forEach(i=>(Xs[i][best.f]<=best.t?L:R).push(i));
+return{f:best.f,t:best.t,p,n,l:tree(Xs,y,L,dep+1,fs,md,imp),r:tree(Xs,y,R,dep+1,fs,md,imp)}}
+const walk=(t,x)=>t.f===undefined?t.p:walk(x[t.f]<=t.t?t.l:t.r,x);
+function dt(Xt,y){const imp=Array(12).fill(0),t=tree(Xt,y,Xt.map((_,i)=>i),0,[...Array(12).keys()],4,imp);return{t,f:x=>walk(t,x),imp}}
+function rf(Xt,y){const imp=Array(12).fill(0),T=[];for(let k=0;k<25;k++){const idx=Xt.map(()=>Math.floor(rnd()*Xt.length)),fs=[...Array(12).keys()].sort(()=>rnd()-.5).slice(0,5);T.push(tree(Xt,y,idx,0,fs,6,imp))}
+return{f:x=>avg(T.map(t=>walk(t,x))),imp}}
+const auc=(s,y)=>{const o=s.map((v,i)=>[v,y[i]]).sort((a,b)=>a[0]-b[0]);let r=0,P=0;o.forEach((e,i)=>{if(e[1]){r+=i+1;P++}});const N=o.length-P;return P&&N?(r-P*(P+1)/2)/(P*N):0};
+// ---- state
+let D=[],M=[],test=[],CH={},src='';
+function load(rows,label){seed=7;D=rows;D.forEach(r=>r.x=X(r));const ix=D.map((_,i)=>i).sort(()=>rnd()-.5),nt=Math.floor(D.length*.25);test=ix.slice(0,nt);
+let tr=ix.slice(nt,nt+9000);const Xt=tr.map(i=>D[i].x),y=tr.map(i=>D[i].y);M=[lr(Xt,y),dt(Xt,y),rf(Xt,y)];
+M.forEach((m,k)=>D.forEach(r=>(r.s=r.s||[])[k]=m.f(r.x)));src=label;draw()}
+const $=id=>document.getElementById(id),pc=v=>(v*100).toFixed(1)+'%',fm=v=>Math.round(v).toLocaleString();
+function mk(id,cfg){CH[id]&&CH[id].destroy();const cs=getComputedStyle(document.documentElement);Chart.defaults.color=cs.getPropertyValue('--mu');Chart.defaults.borderColor=cs.getPropertyValue('--bd');CH[id]=new Chart($(id),cfg)}
+function rule(t,ind,pre){if(t.f===undefined)return pre+'-> '+pc(t.p)+' default (n='+t.n+')\n';let s=pre+'if '+FN[t.f]+' <= '+(+t.t.toFixed(2))+':\n'+rule(t.l,ind+1,'  '.repeat(ind+1));return s+pre+'else:\n'+rule(t.r,ind+1,'  '.repeat(ind+1))}
+function draw(){const m=+$('mdl').value,th=+$('th').value,a0=+$('a0').value,a1=+$('a1').value,l0=+$('l0').value,l1=+$('l1').value,st=+$('st').value;$('thv').textContent=th.toFixed(2);
+const V=D.filter(r=>r.age>=a0&&r.age<=a1&&r.lim>=l0&&r.lim<=l1&&(st<0||r.y==st)),n=V.length||1,dr=V.filter(r=>r.y).length/n;
+$('src').textContent=src+' · '+fm(D.length)+' customers · models trained in your browser';
+$('k1').textContent=fm(V.length);$('k2').textContent=pc(dr);$('k3').textContent=pc(avg(V.map(r=>r.s[m])||[0]));
+$('k4').textContent=fm(V.filter(r=>r.s[m]>=th).length)+' ('+pc(V.filter(r=>r.s[m]>=th).length/n)+')';$('k5').textContent=fm(avg(V.map(r=>r.lim))||0);
+const rate=(keys,f)=>keys.map(k=>{const g=V.filter(r=>f(r)==k);return g.length?+(100*g.filter(r=>r.y).length/g.length).toFixed(1):0});
+const pk=[-2,-1,0,1,2,3,4,5,6,7,8],bar={type:'bar',options:{plugins:{legend:{display:false}},scales:{y:{title:{display:true,text:'Default %'}}}}};
+mk('c1',{...bar,data:{labels:pk,datasets:[{data:rate(pk,r=>r.p[0]),backgroundColor:'#dc2626'}]}});
+const ab=['21-29','30-39','40-49','50-59','60+'],af=r=>r.age<30?ab[0]:r.age<40?ab[1]:r.age<50?ab[2]:r.age<60?ab[3]:ab[4];
+mk('c2',{...bar,data:{labels:ab,datasets:[{data:rate(ab,af),backgroundColor:'#2563eb'}]}});
+const mo=['Apr','May','Jun','Jul','Aug','Sep'],ser=(y,k,f)=>{const g=V.filter(r=>r.y==y);return [5,4,3,2,1,0].map(i=>g.length?Math.round(avg(g.map(r=>r[k][i]))):0)};
+mk('c3',{type:'line',data:{labels:mo,datasets:[{label:'Default: bill',data:ser(1,'b'),borderColor:'#dc2626'},{label:'Default: payment',data:ser(1,'a'),borderColor:'#dc2626',borderDash:[5,4]},{label:'OK: bill',data:ser(0,'b'),borderColor:'#0d9488'},{label:'OK: payment',data:ser(0,'a'),borderColor:'#0d9488',borderDash:[5,4]}],},options:{elements:{point:{radius:2}}}});
+const hb=Array(10).fill(0),hd=Array(10).fill(0);V.forEach(r=>{const k=Math.min(9,Math.floor(r.s[m]*10));hb[k]++;if(r.y)hd[k]++});
+mk('c4',{type:'bar',data:{labels:hb.map((_,i)=>(i/10).toFixed(1)+'-'+((i+1)/10).toFixed(1)),datasets:[{label:'No default',data:hb.map((v,i)=>v-hd[i]),backgroundColor:'#0d9488'},{label:'Defaulted',data:hd,backgroundColor:'#dc2626'}]},options:{scales:{x:{stacked:true},y:{stacked:true}}}});
+const im=M[m].imp,tot=im.reduce((s,v)=>s+v,0)||1,o=im.map((v,i)=>[FN[i],v/tot]).sort((a,b)=>b[1]-a[1]);
+mk('c5',{type:'bar',data:{labels:o.map(e=>e[0]),datasets:[{data:o.map(e=>+(e[1]*100).toFixed(1)),backgroundColor:'#2563eb'}]},options:{indexAxis:'y',plugins:{legend:{display:false}}}});
+const yt=test.map(i=>D[i].y);let h='<tr><th>Model</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th><th>AUC</th></tr>';
+['Logistic Regression','Decision Tree','Random Forest'].forEach((nm,k)=>{const s=test.map(i=>D[i].s[k]);let tp=0,fp=0,fn=0,tn=0;s.forEach((v,i)=>{const p=v>=th;yt[i]?(p?tp++:fn++):(p?fp++:tn++)});
+const pr=tp/(tp+fp||1),rc=tp/(tp+fn||1);h+=`<tr${k==m?' style="font-weight:600"':''}><td>${nm}</td><td>${pc((tp+tn)/s.length)}</td><td>${pc(pr)}</td><td>${pc(rc)}</td><td>${(2*pr*rc/(pr+rc||1)).toFixed(2)}</td><td>${auc(s,yt).toFixed(3)}</td></tr>`});$('mt').innerHTML=h;
+$('rules').textContent=rule(M[1].t,0,'');
+const top=[...V].sort((a,b)=>b.s[m]-a.s[m]).slice(0,12);
+$('ct').innerHTML='<tr><th>ID</th><th>Limit</th><th>Age</th><th>PAY_0</th><th>Last bill</th><th>Last payment</th><th>Predicted risk</th><th>Actual</th></tr>'+top.map(r=>`<tr><td>${r.id}</td><td>${fm(r.lim)}</td><td>${r.age}</td><td>${r.p[0]}</td><td>${fm(r.b[0])}</td><td>${fm(r.a[0])}</td><td class="${r.s[m]>=th?'hi':''}">${pc(r.s[m])}</td><td>${r.y?'Default':'OK'}</td></tr>`).join('')}
+['mdl','th','a0','a1','l0','l1','st'].forEach(i=>$(i).addEventListener('input',draw));
+$('demo').onclick=()=>{seed=42;load(synth(6000),'Synthetic demo data (same schema as UCI dataset)')};
+$('f').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{try{load(parse(t),f.name)}catch(x){alert('Could not read file: '+x.message)}})};
+seed=42;load(synth(6000),'Synthetic demo data (same schema as UCI dataset)');
+</script></body></html>
